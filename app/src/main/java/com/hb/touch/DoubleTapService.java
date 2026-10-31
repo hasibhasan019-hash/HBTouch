@@ -5,7 +5,6 @@ import android.app.KeyguardManager;
 import android.content.Intent;
 import android.content.pm.ResolveInfo;
 import android.graphics.PixelFormat;
-import android.graphics.Rect;
 import android.os.SystemClock;
 import android.view.Gravity;
 import android.view.MotionEvent;
@@ -20,7 +19,6 @@ public class DoubleTapService extends AccessibilityService {
     private WindowManager wm;
     private View overlay;
     private long lastTap = 0;
-    private float lastX = 0, lastY = 0;
 
     @Override
     protected void onServiceConnected() {
@@ -30,7 +28,7 @@ public class DoubleTapService extends AccessibilityService {
         overlay = new View(this);
         overlay.setOnTouchListener((v, e) -> {
             if (e.getAction() == MotionEvent.ACTION_OUTSIDE) {
-                handleTap(e.getRawX(), e.getRawY());
+                handleTap();
             }
             return false;
         });
@@ -46,75 +44,55 @@ public class DoubleTapService extends AccessibilityService {
         wm.addView(overlay, lp);
     }
 
-    private void handleTap(float x, float y) {
-        // Coordinate na pele ba khali jaygay na hole bhule jao
-        if ((x == 0 && y == 0) || !isEmptyHomeSpot((int) x, (int) y)) {
+    private void handleTap() {
+        if (!isPlainHome()) {
             lastTap = 0;
             return;
         }
         long now = SystemClock.uptimeMillis();
         long gap = now - lastTap;
-        float dx = x - lastX, dy = y - lastY;
-        float slop = ViewConfiguration.get(this).getScaledDoubleTapSlop() * 2f;
-        boolean close = (dx * dx + dy * dy) <= slop * slop;
-
-        if (lastTap != 0 && gap > 40
-                && gap <= ViewConfiguration.getDoubleTapTimeout() && close) {
+        if (lastTap != 0 && gap > 40 && gap <= ViewConfiguration.getDoubleTapTimeout()) {
             lastTap = 0;
             performGlobalAction(GLOBAL_ACTION_LOCK_SCREEN);
         } else {
             lastTap = now;
-            lastX = x;
-            lastY = y;
         }
     }
 
-    private boolean isEmptyHomeSpot(int x, int y) {
-        // 1) Lock screen e thakle kichu korbe na
+    /** true = lock screen na, home launcher shamne, drawer/recents/folder khola na */
+    private boolean isPlainHome() {
         KeyguardManager km = (KeyguardManager) getSystemService(KEYGUARD_SERVICE);
         if (km != null && km.isKeyguardLocked()) return false;
 
-        // 2) Samner window home launcher hote hobe
         AccessibilityNodeInfo root = getRootInActiveWindow();
         if (root == null) return false;
         try {
             CharSequence pkg = root.getPackageName();
             if (pkg == null || !pkg.toString().equals(homePackage())) return false;
-
-            // 3) Tap er jaygay icon/list/recents/folder kichu thakle na
-            return !blocked(root, x, y);
+            return !overlayOpen(root, 0);
         } finally {
             root.recycle();
         }
     }
 
-    /** true = ei jaygay khali home na (drawer, recents, icon, text, button, folder...) */
-    private boolean blocked(AccessibilityNodeInfo n, int x, int y) {
-        Rect r = new Rect();
-        n.getBoundsInScreen(r);
-        if (!r.contains(x, y) || !n.isVisibleToUser()) return false;
-
-        String cls = n.getClassName() == null ? "" : n.getClassName().toString();
-        String id = n.getViewIdResourceName() == null
-                ? "" : n.getViewIdResourceName().toLowerCase();
-
-        if (cls.contains("RecyclerView") || cls.contains("ListView")
-                || cls.contains("TextView") || cls.contains("ImageView")
-                || cls.contains("Button") || cls.contains("EditText")
-                || cls.contains("ScrollView")) {
-            return true;
+    private boolean overlayOpen(AccessibilityNodeInfo n, int depth) {
+        if (depth > 25) return false;
+        if (n.isVisibleToUser()) {
+            String cls = n.getClassName() == null ? "" : n.getClassName().toString();
+            String id = n.getViewIdResourceName() == null
+                    ? "" : n.getViewIdResourceName().toLowerCase();
+            if (cls.contains("RecyclerView") || cls.contains("ListView")
+                    || id.contains("overview") || id.contains("recents")
+                    || id.contains("folder") || id.contains("widgets")
+                    || id.contains("apps_list") || id.contains("apps_view")
+                    || id.contains("all_apps")) {
+                return true;
+            }
         }
-        if (id.contains("overview") || id.contains("recents")
-                || id.contains("folder") || id.contains("widgets")
-                || id.contains("apps_list") || id.contains("apps_view")
-                || (id.contains("all_apps") && !id.contains("handle"))) {
-            return true;
-        }
-
         for (int i = 0; i < n.getChildCount(); i++) {
             AccessibilityNodeInfo c = n.getChild(i);
             if (c == null) continue;
-            boolean b = blocked(c, x, y);
+            boolean b = overlayOpen(c, depth + 1);
             c.recycle();
             if (b) return true;
         }
